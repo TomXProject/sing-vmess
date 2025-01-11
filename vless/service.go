@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 
-	"github.com/sagernet/sing-vmess"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -15,10 +15,13 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
+	vmess "github.com/sagernet/sing-vmess"
+
 	"github.com/gofrs/uuid/v5"
 )
 
 type Service[T comparable] struct {
+	mu       *sync.RWMutex
 	userMap  map[[16]byte]T
 	userFlow map[T]string
 	logger   logger.Logger
@@ -31,8 +34,9 @@ type Handler interface {
 	E.Handler
 }
 
-func NewService[T comparable](logger logger.Logger, handler Handler) *Service[T] {
+func NewService[T comparable](mu *sync.RWMutex, logger logger.Logger, handler Handler) *Service[T] {
 	return &Service[T]{
+		mu:      mu,
 		logger:  logger,
 		handler: handler,
 	}
@@ -60,6 +64,15 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 	if err != nil {
 		return err
 	}
+
+	s.mu.RLock()
+
+	locked := true
+	defer func() {
+		if locked {
+			s.mu.RUnlock()
+		}
+	}()
 	user, loaded := s.userMap[request.UUID]
 	if !loaded {
 		return E.New("unknown UUID: ", uuid.FromBytesOrNil(request.UUID[:]))
@@ -75,6 +88,7 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 	}
 
 	if request.Command == vmess.CommandUDP {
+		locked = false
 		return s.handler.NewPacketConnection(ctx, &serverPacketConn{ExtendedConn: bufio.NewExtendedConn(conn), destination: request.Destination}, metadata)
 	}
 	responseConn := &serverConn{ExtendedConn: bufio.NewExtendedConn(conn), writer: bufio.NewVectorisedWriter(conn)}
@@ -91,8 +105,10 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 	}
 	switch request.Command {
 	case vmess.CommandTCP:
+		locked = false
 		return s.handler.NewConnection(ctx, conn, metadata)
 	case vmess.CommandMux:
+		locked = false
 		return vmess.HandleMuxConnection(ctx, conn, s.handler)
 	default:
 		return E.New("unknown command: ", request.Command)
