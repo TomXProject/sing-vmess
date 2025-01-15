@@ -3,6 +3,7 @@ package vless
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -43,8 +44,6 @@ func NewService[T comparable](mu *sync.RWMutex, logger logger.Logger, handler Ha
 }
 
 func (s *Service[T]) UpdateUsers(userList []T, userUUIDList []string, userFlowList []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	userMap := make(map[[16]byte]T)
 	userFlowMap := make(map[T]string)
 	for i, userName := range userList {
@@ -67,11 +66,16 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 		return err
 	}
 
+	fmt.Println("VLESS NewConnection RLocking...")
 	s.mu.RLock()
+	fmt.Println("VLESS NewConnection RLocked!")
+
 	locked := true
 	defer func() {
 		if locked {
+			fmt.Println("VLESS NewConnection RUnlocking...")
 			s.mu.RUnlock()
+			fmt.Println("VLESS NewConnection RUnlocked!")
 		}
 	}()
 	user, loaded := s.userMap[request.UUID]
